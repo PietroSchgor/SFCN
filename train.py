@@ -7,8 +7,8 @@ from torch.optim.lr_scheduler import StepLR
 from dp_model import dp_loss as dpl
 
 def train_model(model, train_loader, val_loader, optimizer, device, epochs=130):
-    # Scheduler: LR moltiplicato per 0.3 ogni 30 epoche, come da paper
-    scheduler = StepLR(optimizer, step_size=30, gamma=0.3)
+    # Scheduler: LR moltiplicato per 0.3 ogni 2855 epoche (calcolato per eguagliare gli step del paper originale con 170 pazienti)
+    scheduler = StepLR(optimizer, step_size=2855, gamma=0.3)
     
     train_losses = []
     val_losses = []
