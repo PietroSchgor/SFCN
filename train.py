@@ -1,45 +1,39 @@
 import torch
+import numpy as np
 import matplotlib.pyplot as plt
+from torch.optim.lr_scheduler import StepLR
 
-class EarlyStopping:
-    """Ferma il training in anticipo se la validation loss non migliora dopo una certa patience."""
-    def __init__(self, patience=5, min_delta=0):
-        self.patience = patience
-        self.min_delta = min_delta
-        self.counter = 0
-        self.best_loss = None
-        self.early_stop = False
+# Assumiamo che la repo SFCN sia aggiunta al sys.path in Kaggle
+from dp_model import dp_loss as dpl
 
-    def __call__(self, val_loss):
-        if self.best_loss is None:
-            self.best_loss = val_loss
-        elif val_loss > self.best_loss - self.min_delta:
-            self.counter += 1
-            if self.counter >= self.patience:
-                self.early_stop = True
-        else:
-            self.best_loss = val_loss
-            self.counter = 0
-
-def train_model(model, train_loader, val_loader, criterion, optimizer, device, epochs=50, patience=5):
-    early_stopping = EarlyStopping(patience=patience)
+def train_model(model, train_loader, val_loader, optimizer, device, epochs=130):
+    # Scheduler: LR moltiplicato per 0.3 ogni 30 epoche, come da paper
+    scheduler = StepLR(optimizer, step_size=30, gamma=0.3)
     
     train_losses = []
     val_losses = []
+    val_maes = []
+    
+    best_mae = float('inf')
+    best_model_state = None
+    
+    # Range di binning che useremo (0-70 anni, con step di 1)
+    bin_centers = np.arange(0, 70, 1)
     
     for epoch in range(epochs):
         # ---- TRAINING PHASE ----
         model.train()
         train_loss = 0.0
         
-        for batch_idx, (inputs, labels) in enumerate(train_loader):
-            inputs, labels = inputs.to(device), labels.to(device)
+        for batch_idx, (inputs, labels_vect, _) in enumerate(train_loader):
+            inputs, labels_vect = inputs.to(device), labels_vect.to(device)
             
             optimizer.zero_grad()
-            outputs = model(inputs)[0] # SFCN restituisce una lista, prendiamo l'elemento 0
+            outputs = model(inputs)[0] # SFCN restituisce una lista
             outputs = outputs.view(outputs.size(0), -1)
             
-            loss = criterion(outputs, labels)
+            # Loss: KL Divergence (soft-classification)
+            loss = dpl.my_KLDivLoss(outputs, labels_vect)
             loss.backward()
             optimizer.step()
             
@@ -51,42 +45,64 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, device, e
         # ---- VALIDATION PHASE ----
         model.eval()
         val_loss = 0.0
-        correct = 0
+        val_mae = 0.0
         
         with torch.no_grad():
-            for inputs, labels in val_loader:
-                inputs, labels = inputs.to(device), labels.to(device)
+            for inputs, labels_vect, true_age in val_loader:
+                inputs, labels_vect = inputs.to(device), labels_vect.to(device)
+                true_age = true_age.numpy()
                 
                 outputs = model(inputs)[0]
                 outputs = outputs.view(outputs.size(0), -1)
                 
-                loss = criterion(outputs, labels)
+                loss = dpl.my_KLDivLoss(outputs, labels_vect)
                 val_loss += loss.item() * inputs.size(0)
                 
-                _, predicted = torch.max(outputs.data, 1)
-                correct += (predicted == labels).sum().item()
+                # Calcolo dell'età predetta e del MAE (Mean Absolute Error)
+                prob = torch.exp(outputs).cpu().numpy()
+                predicted_age = prob @ bin_centers
+                
+                mae = np.sum(np.abs(predicted_age - true_age))
+                val_mae += mae
                 
         val_loss /= len(val_loader.dataset)
+        val_mae /= len(val_loader.dataset)
+        
         val_losses.append(val_loss)
-        val_acc = 100 * correct / len(val_loader.dataset)
+        val_maes.append(val_mae)
         
-        print(f"Epoch {epoch+1}/{epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%")
+        print(f"Epoch {epoch+1}/{epochs} | LR: {scheduler.get_last_lr()[0]:.6f} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val MAE: {val_mae:.2f} anni")
         
-        # Controllo Early Stopping
-        early_stopping(val_loss)
-        if early_stopping.early_stop:
-            print(f"\nEarly stopping innescato all'epoca {epoch+1}! Nessun miglioramento per {patience} epoche.")
-            break
+        # L'epoca con il miglior validation MAE è usata per il test finale (SFCN paper)
+        if val_mae < best_mae:
+            best_mae = val_mae
+            best_model_state = model.state_dict().copy()
+            print(f"  -> Nuovo miglior MAE: {best_mae:.2f}! Modello salvato in cache.")
             
-    # Plot delle curve di loss a fine addestramento
-    plt.figure(figsize=(10, 5))
-    plt.plot(range(1, len(train_losses) + 1), train_losses, label='Train Loss', marker='o')
-    plt.plot(range(1, len(val_losses) + 1), val_losses, label='Validation Loss', marker='o')
-    plt.xlabel('Epoca')
-    plt.ylabel('Loss')
-    plt.title('Curva di Addestramento (Loss)')
+        # Step dello scheduler
+        scheduler.step()
+            
+    print(f"\\nTraining completato! Carico i pesi dell'epoca con il miglior MAE in validazione ({best_mae:.2f}).")
+    model.load_state_dict(best_model_state)
+            
+    # Plot delle curve a fine addestramento
+    plt.figure(figsize=(12, 5))
+    plt.subplot(1, 2, 1)
+    plt.plot(range(1, epochs + 1), train_losses, label='Train Loss', marker='o', markersize=3)
+    plt.plot(range(1, epochs + 1), val_losses, label='Validation Loss', marker='o', markersize=3)
+    plt.xlabel('Epoch')
+    plt.ylabel('KL Divergence Loss')
     plt.legend()
-    plt.grid(True)
+    plt.title('Curva di Loss (Soft-Classification)')
+    
+    plt.subplot(1, 2, 2)
+    plt.plot(range(1, epochs + 1), val_maes, label='Validation MAE', color='red', marker='o', markersize=3)
+    plt.xlabel('Epoch')
+    plt.ylabel('MAE (anni)')
+    plt.legend()
+    plt.title('Mean Absolute Error')
+    
+    plt.tight_layout()
     plt.show()
     
-    return model, train_losses, val_losses
+    return model, train_losses, val_losses, val_maes
