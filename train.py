@@ -6,9 +6,9 @@ from torch.optim.lr_scheduler import StepLR
 # Assumiamo che la repo SFCN sia aggiunta al sys.path in Kaggle
 from dp_model import dp_loss as dpl
 
-def train_model(model, train_loader, val_loader, optimizer, device, epochs=130):
-    # Scheduler: LR moltiplicato per 0.3 ogni 713 epoche (calcolato per batch size 2)
-    scheduler = StepLR(optimizer, step_size=713, gamma=0.3)
+def train_model(model, train_loader, val_loader, optimizer, device, epochs=130, step_size=713, gamma=0.3, patience=None):
+    # Scheduler: configurato tramite i parametri della funzione
+    scheduler = StepLR(optimizer, step_size=step_size, gamma=gamma)
     
     train_losses = []
     val_losses = []
@@ -16,6 +16,9 @@ def train_model(model, train_loader, val_loader, optimizer, device, epochs=130):
     
     best_mae = float('inf')
     best_model_state = None
+    
+    # Contatore per early stopping
+    epochs_no_improve = 0
     
     # Range di binning che useremo (0-70 anni, con step di 1)
     bin_centers = np.arange(0, 70, 1)
@@ -71,13 +74,23 @@ def train_model(model, train_loader, val_loader, optimizer, device, epochs=130):
         val_losses.append(val_loss)
         val_maes.append(val_mae)
         
-        print(f"Epoch {epoch+1}/{epochs} | LR: {scheduler.get_last_lr()[0]:.6f} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val MAE: {val_mae:.2f} anni")
-        
-        # L'epoca con il miglior validation MAE è usata per il test finale (SFCN paper)
+        # Aggiornamento contatori per Early Stopping e Best Model
         if val_mae < best_mae:
             best_mae = val_mae
             best_model_state = model.state_dict().copy()
-            print(f"  -> Nuovo miglior MAE: {best_mae:.2f}! Modello salvato in cache.")
+            epochs_no_improve = 0
+            improved_msg = " -> Nuovo miglior MAE! Modello salvato in cache."
+        else:
+            epochs_no_improve += 1
+            improved_msg = ""
+        
+        print(f"Epoch {epoch+1}/{epochs} | LR: {scheduler.get_last_lr()[0]:.6f} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val MAE: {val_mae:.2f} anni")
+        print(f"   Miglior MAE: {best_mae:.2f} | Contatore Patience: {epochs_no_improve}/{patience if patience else 'Disattivata'}{improved_msg}")
+        
+        # L'epoca con il miglior validation MAE è usata per il test finale (SFCN paper)
+        if patience is not None and epochs_no_improve >= patience:
+            print(f"\\nEarly stopping innescato all'epoca {epoch+1}! Nessun miglioramento del MAE per {patience} epoche consecutive.")
+            break
             
         # Step dello scheduler
         scheduler.step()
@@ -85,18 +98,18 @@ def train_model(model, train_loader, val_loader, optimizer, device, epochs=130):
     print(f"\\nTraining completato! Carico i pesi dell'epoca con il miglior MAE in validazione ({best_mae:.2f}).")
     model.load_state_dict(best_model_state)
             
-    # Plot delle curve a fine addestramento
+    # Plot delle curve a fine addestramento (usiamo len(train_losses) perché potremmo esserci fermati con l'early stopping)
     plt.figure(figsize=(12, 5))
     plt.subplot(1, 2, 1)
-    plt.plot(range(1, epochs + 1), train_losses, label='Train Loss', marker='o', markersize=3)
-    plt.plot(range(1, epochs + 1), val_losses, label='Validation Loss', marker='o', markersize=3)
+    plt.plot(range(1, len(train_losses) + 1), train_losses, label='Train Loss', marker='o', markersize=3)
+    plt.plot(range(1, len(val_losses) + 1), val_losses, label='Validation Loss', marker='o', markersize=3)
     plt.xlabel('Epoch')
     plt.ylabel('KL Divergence Loss')
     plt.legend()
     plt.title('Curva di Loss (Soft-Classification)')
     
     plt.subplot(1, 2, 2)
-    plt.plot(range(1, epochs + 1), val_maes, label='Validation MAE', color='red', marker='o', markersize=3)
+    plt.plot(range(1, len(val_maes) + 1), val_maes, label='Validation MAE', color='red', marker='o', markersize=3)
     plt.xlabel('Epoch')
     plt.ylabel('MAE (anni)')
     plt.legend()
