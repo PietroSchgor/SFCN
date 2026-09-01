@@ -1,3 +1,4 @@
+import os
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -6,7 +7,7 @@ from torch.optim.lr_scheduler import StepLR
 # Assumiamo che la repo SFCN sia aggiunta al sys.path in Kaggle
 from dp_model import dp_loss as dpl
 
-def train_model(model, train_loader, val_loader, optimizer, device, epochs=130, step_size=713, gamma=0.3, patience=None):
+def train_model(model, train_loader, val_loader, optimizer, device, epochs=130, step_size=713, gamma=0.3, patience=None, fold_idx=None):
     # Scheduler: configurato tramite i parametri della funzione
     scheduler = StepLR(optimizer, step_size=step_size, gamma=gamma)
     
@@ -116,6 +117,13 @@ def train_model(model, train_loader, val_loader, optimizer, device, epochs=130, 
     plt.title('Mean Absolute Error')
     
     plt.tight_layout()
+    
+    # Salvataggio del plot se richiesto
+    if fold_idx is not None:
+        plots_dir = '/kaggle/working/plots'
+        os.makedirs(plots_dir, exist_ok=True)
+        plt.savefig(os.path.join(plots_dir, f'training_curves_fold_{fold_idx}.png'))
+        
     plt.show()
     
     return model, train_losses, val_losses, val_maes
