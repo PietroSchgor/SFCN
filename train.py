@@ -21,8 +21,7 @@ def train_model(model, train_loader, val_loader, optimizer, device, epochs=130, 
     # Contatore per early stopping
     epochs_no_improve = 0
     
-    # Range di binning che useremo (0-70 anni, con step di 1)
-    bin_centers = np.arange(0, 70, 1)
+        # Range di binning rimosso dall'inizio (verrà calcolato dinamicamente)
     
     for epoch in range(epochs):
         # ---- TRAINING PHASE ----
@@ -64,6 +63,10 @@ def train_model(model, train_loader, val_loader, optimizer, device, epochs=130, 
                 
                 # Calcolo dell'età predetta e del MAE (Mean Absolute Error)
                 prob = torch.exp(outputs).cpu().numpy()
+                
+                # Calcoliamo bin_centers dinamicamente in base all'output della rete (es. 70 o 100)
+                bin_centers = np.arange(0, prob.shape[1], 1)
+                
                 predicted_age = prob @ bin_centers
                 
                 mae = np.sum(np.abs(predicted_age - true_age))
